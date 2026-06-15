@@ -19,22 +19,27 @@ import { initDatabase } from "./db.js";
 import { AppError, isAppError } from "./errors.js";
 import {
     createConversation,
+    deleteConversation,
     createMessage,
     createUser,
     findRefreshToken,
     findUserByEmail,
     findUserById,
+    getConversationById,
     getLatestConversation,
     hashToken,
+    listConversations,
     listMessages,
     revokeRefreshToken,
     storeRefreshToken,
     touchConversation,
+    updateConversationTitleIfDefault,
     updateMessage,
 } from "./repositories.js";
 import { setSSEHeaders, writeSSE } from "./sse.js";
 import { streamByProvider } from "./streaming.js";
-import type { ChatRequest, MemoryMessage, Provider, RenderMode } from "./types.js";
+import { getMCPManager } from "./mcp.js";
+import type { AssistantMode, ChatRequest, MemoryMessage, Provider, RenderMode } from "./types.js";
 import { assertEmail, assertPassword, assertUsername } from "./validators.js";
 
 const app = express();
@@ -170,6 +175,29 @@ app.get("/api/auth/me", requireAuth, async (req: AuthedRequest, res, next) => {
 
         const latestConversation = await getLatestConversation(req.authUser.id);
         const messages = latestConversation ? await listMessages(latestConversation.id) : [];
+        const conversations = await listConversations(req.authUser.id);
+        let agent = {
+            availableTools: [] as {
+                serverName: string;
+                name: string;
+                description: string;
+                inputSchema: unknown;
+            }[],
+            error: null as string | null,
+        };
+
+        try {
+            const manager = await getMCPManager();
+            agent = {
+                availableTools: manager.getToolSummaries(),
+                error: manager.getStatus().error,
+            };
+        } catch (error) {
+            agent = {
+                availableTools: [],
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
 
         res.json({
             user: req.authUser,
@@ -179,8 +207,74 @@ app.get("/api/auth/me", requireAuth, async (req: AuthedRequest, res, next) => {
                       title: latestConversation.title,
                   }
                 : null,
+            conversations,
+            agent,
             messages,
         });
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get("/api/conversations", requireAuth, async (req: AuthedRequest, res, next) => {
+    try {
+        if (!req.authUser) {
+            throw new AppError("unauthorized_error", "Unauthorized");
+        }
+
+        const conversations = await listConversations(req.authUser.id);
+        res.json({ conversations });
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get("/api/conversations/:id", requireAuth, async (req: AuthedRequest, res, next) => {
+    try {
+        if (!req.authUser) {
+            throw new AppError("unauthorized_error", "Unauthorized");
+        }
+
+        const conversationId = Number(req.params.id);
+        if (!conversationId) {
+            throw new AppError("validation_error", "Invalid conversation id.");
+        }
+
+        const conversation = await getConversationById(req.authUser.id, conversationId);
+        if (!conversation) {
+            throw new AppError("validation_error", "Conversation not found.");
+        }
+
+        const messages = await listMessages(conversationId);
+        res.json({
+            conversation: {
+                id: conversation.id,
+                title: conversation.title,
+            },
+            messages,
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.delete("/api/conversations/:id", requireAuth, async (req: AuthedRequest, res, next) => {
+    try {
+        if (!req.authUser) {
+            throw new AppError("unauthorized_error", "Unauthorized");
+        }
+
+        const conversationId = Number(req.params.id);
+        if (!conversationId) {
+            throw new AppError("validation_error", "Invalid conversation id.");
+        }
+
+        const deleted = await deleteConversation(req.authUser.id, conversationId);
+        if (!deleted) {
+            throw new AppError("validation_error", "Conversation not found.");
+        }
+
+        res.status(204).end();
     } catch (error) {
         next(error);
     }
@@ -196,6 +290,12 @@ app.post("/api/chat", requireAuth, async (req: AuthedRequest, res, next) => {
     const message = typeof payload.message === "string" ? payload.message.trim() : "";
     const mode: RenderMode = payload.mode === "buffered" ? "buffered" : "direct";
     const provider: Provider = payload.provider === "mock" ? "mock" : "live";
+    const assistantMode: AssistantMode =
+        payload.assistantMode === "agent"
+            ? "agent"
+            : payload.assistantMode === "nba"
+              ? "nba"
+              : "chat";
     const history: MemoryMessage[] = Array.isArray(payload.history)
         ? payload.history
               .filter(
@@ -218,13 +318,22 @@ app.post("/api/chat", requireAuth, async (req: AuthedRequest, res, next) => {
 
     let conversationId = Number(payload.conversationId ?? 0);
     if (!conversationId) {
-        const latestConversation = await getLatestConversation(req.authUser.id);
-        if (latestConversation) {
-            conversationId = latestConversation.id;
-        } else {
-            conversationId = await createConversation(req.authUser.id, message.slice(0, 48) || "New conversation");
+        conversationId = await createConversation(req.authUser.id, "New conversation");
+    } else {
+        const conversation = await getConversationById(req.authUser.id, conversationId);
+        if (!conversation) {
+            res.status(404).json({
+                error: "conversation not found",
+                code: "validation_error",
+            });
+            return;
         }
     }
+
+    await updateConversationTitleIfDefault(
+        conversationId,
+        message.slice(0, 48) || "New conversation",
+    );
 
     await createMessage({
         conversationId,
@@ -255,6 +364,7 @@ app.post("/api/chat", requireAuth, async (req: AuthedRequest, res, next) => {
         model: config.model,
         provider,
         conversationId,
+        assistantMode,
     });
 
     let assistantContent = "";
@@ -265,6 +375,7 @@ app.post("/api/chat", requireAuth, async (req: AuthedRequest, res, next) => {
             history,
             model: config.model,
             provider,
+            assistantMode,
             aborted: () => closed,
             onToken: (token) => {
                 assistantContent += token;

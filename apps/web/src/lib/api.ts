@@ -1,4 +1,4 @@
-import type { MemoryMessage, Provider, RenderMode } from "../types";
+import type { AssistantMode, MemoryMessage, Provider, RenderMode } from "../types";
 import { useAuthState, type AuthUser } from "./auth";
 
 type AuthResponse = {
@@ -6,15 +6,41 @@ type AuthResponse = {
     user: AuthUser;
 };
 
+export type ConversationSummary = {
+    id: number;
+    title: string;
+    updatedAt: string;
+    lastMessage: string | null;
+};
+
+export type PersistedMessage = {
+    id: number;
+    role: "user" | "assistant";
+    content: string;
+    status: "complete" | "streaming" | "cancelled" | "error";
+};
+
+export type AgentToolSummary = {
+    serverName: string;
+    name: string;
+    description: string;
+    inputSchema: unknown;
+};
+
 type BootstrapResponse = {
     user: AuthUser;
     conversation: { id: number; title: string } | null;
-    messages: {
-        id: number;
-        role: "user" | "assistant";
-        content: string;
-        status: "complete" | "streaming" | "cancelled" | "error";
-    }[];
+    conversations: ConversationSummary[];
+    agent: {
+        availableTools: AgentToolSummary[];
+        error: string | null;
+    };
+    messages: PersistedMessage[];
+};
+
+type ConversationDetailResponse = {
+    conversation: { id: number; title: string };
+    messages: PersistedMessage[];
 };
 
 type ChatResponseRequest = {
@@ -23,9 +49,21 @@ type ChatResponseRequest = {
     history: MemoryMessage[];
     mode: RenderMode;
     provider: Provider;
+    assistantMode: AssistantMode;
 };
 
 const auth = useAuthState();
+
+async function toHTTPError(response: Response) {
+    const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    const error = new Error(payload.error ?? `HTTP ${response.status}`) as Error & {
+        code?: string;
+        status?: number;
+    };
+    error.code = payload.code;
+    error.status = response.status;
+    return error;
+}
 
 async function requestJSON<T>(url: string, init: RequestInit = {}) {
     const response = await fetch(url, {
@@ -43,14 +81,7 @@ async function requestJSON<T>(url: string, init: RequestInit = {}) {
     });
 
     if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-        const error = new Error(payload.error ?? `HTTP ${response.status}`) as Error & {
-            code?: string;
-            status?: number;
-        };
-        error.code = payload.code;
-        error.status = response.status;
-        throw error;
+        throw await toHTTPError(response);
     }
 
     if (response.status === 204) {
@@ -106,6 +137,24 @@ export async function fetchBootstrap() {
     });
 }
 
+export async function fetchConversations() {
+    return requestJSON<{ conversations: ConversationSummary[] }>("/api/conversations", {
+        method: "GET",
+    });
+}
+
+export async function fetchConversationDetail(conversationId: number) {
+    return requestJSON<ConversationDetailResponse>(`/api/conversations/${conversationId}`, {
+        method: "GET",
+    });
+}
+
+export async function deleteConversation(conversationId: number) {
+    return requestJSON<null>(`/api/conversations/${conversationId}`, {
+        method: "DELETE",
+    });
+}
+
 export async function ensureAuthenticated() {
     if (auth.state.accessToken && auth.state.user) {
         auth.markHydrated();
@@ -118,7 +167,7 @@ export async function ensureAuthenticated() {
 }
 
 export async function openChatStream(payload: ChatResponseRequest, signal: AbortSignal) {
-    const response = await fetch("/api/chat", {
+    let response = await fetch("/api/chat", {
         method: "POST",
         credentials: "include",
         headers: {
@@ -139,7 +188,7 @@ export async function openChatStream(payload: ChatResponseRequest, signal: Abort
             throw new Error("Unauthorized");
         }
 
-        return fetch("/api/chat", {
+        response = await fetch("/api/chat", {
             method: "POST",
             credentials: "include",
             headers: {
@@ -149,6 +198,10 @@ export async function openChatStream(payload: ChatResponseRequest, signal: Abort
             body: JSON.stringify(payload),
             signal,
         });
+    }
+
+    if (!response.ok) {
+        throw await toHTTPError(response);
     }
 
     return response;

@@ -14,6 +14,8 @@ type ConversationRow = RowDataPacket & {
     id: number;
     user_id: number;
     title: string;
+    updated_at: Date | string;
+    last_message: string | null;
 };
 
 type MessageRow = RowDataPacket & {
@@ -29,6 +31,13 @@ export type MessageRecord = {
     role: "user" | "assistant";
     content: string;
     status: "complete" | "streaming" | "cancelled" | "error";
+};
+
+export type ConversationSummary = {
+    id: number;
+    title: string;
+    updatedAt: string;
+    lastMessage: string | null;
 };
 
 export function hashToken(token: string) {
@@ -98,8 +107,77 @@ export async function revokeRefreshToken(tokenHash: string) {
 
 export async function getLatestConversation(userId: number) {
     const [rows] = await pool.query<ConversationRow[]>(
-        "SELECT id, user_id, title FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
+        `SELECT
+            c.id,
+            c.user_id,
+            c.title,
+            c.updated_at,
+            (
+                SELECT m.content
+                FROM messages m
+                WHERE m.conversation_id = c.id
+                ORDER BY m.id DESC
+                LIMIT 1
+            ) AS last_message
+        FROM conversations c
+        WHERE c.user_id = ?
+        ORDER BY c.updated_at DESC
+        LIMIT 1`,
         [userId],
+    );
+
+    return rows[0] ?? null;
+}
+
+export async function listConversations(userId: number) {
+    const [rows] = await pool.query<ConversationRow[]>(
+        `SELECT
+            c.id,
+            c.user_id,
+            c.title,
+            c.updated_at,
+            (
+                SELECT m.content
+                FROM messages m
+                WHERE m.conversation_id = c.id
+                ORDER BY m.id DESC
+                LIMIT 1
+            ) AS last_message
+        FROM conversations c
+        WHERE c.user_id = ?
+        ORDER BY c.updated_at DESC, c.id DESC`,
+        [userId],
+    );
+
+    return rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        updatedAt:
+            row.updated_at instanceof Date
+                ? row.updated_at.toISOString()
+                : new Date(row.updated_at).toISOString(),
+        lastMessage: row.last_message,
+    })) as ConversationSummary[];
+}
+
+export async function getConversationById(userId: number, conversationId: number) {
+    const [rows] = await pool.query<ConversationRow[]>(
+        `SELECT
+            c.id,
+            c.user_id,
+            c.title,
+            c.updated_at,
+            (
+                SELECT m.content
+                FROM messages m
+                WHERE m.conversation_id = c.id
+                ORDER BY m.id DESC
+                LIMIT 1
+            ) AS last_message
+        FROM conversations c
+        WHERE c.id = ? AND c.user_id = ?
+        LIMIT 1`,
+        [conversationId, userId],
     );
 
     return rows[0] ?? null;
@@ -116,6 +194,22 @@ export async function createConversation(userId: number, title = "New conversati
 
 export async function touchConversation(conversationId: number) {
     await pool.execute("UPDATE conversations SET updated_at = NOW() WHERE id = ?", [conversationId]);
+}
+
+export async function updateConversationTitleIfDefault(conversationId: number, title: string) {
+    await pool.execute(
+        "UPDATE conversations SET title = ? WHERE id = ? AND title = 'New conversation'",
+        [title, conversationId],
+    );
+}
+
+export async function deleteConversation(userId: number, conversationId: number) {
+    const [result] = await pool.execute(
+        "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+        [conversationId, userId],
+    );
+
+    return Number((result as { affectedRows: number }).affectedRows);
 }
 
 export async function listMessages(conversationId: number) {

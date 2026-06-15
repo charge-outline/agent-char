@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import "./HomeView.css";
 import { login, register } from "../lib/api";
 import { useAuthState } from "../lib/auth";
+
+const REMEMBERED_EMAIL_KEY = "agent-char-remembered-email";
 
 const router = useRouter();
 const auth = useAuthState();
@@ -11,6 +13,7 @@ const mode = ref<"login" | "register">("login");
 const username = ref("");
 const email = ref("");
 const password = ref("");
+const rememberAccount = ref(false);
 const pending = ref(false);
 const errorMessage = ref("");
 
@@ -36,6 +39,12 @@ async function submit() {
             });
         }
 
+        if (rememberAccount.value) {
+            window.localStorage.setItem(REMEMBERED_EMAIL_KEY, email.value.trim());
+        } else {
+            window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+        }
+
         await router.push("/chat");
     } catch (error) {
         errorMessage.value = error instanceof Error ? error.message : String(error);
@@ -47,6 +56,24 @@ async function submit() {
 async function goToChat() {
     await router.push("/chat");
 }
+
+onMounted(() => {
+    const rememberedEmail = window.localStorage.getItem(REMEMBERED_EMAIL_KEY);
+    if (!rememberedEmail) {
+        return;
+    }
+
+    email.value = rememberedEmail;
+    rememberAccount.value = true;
+});
+
+watch(rememberAccount, (enabled) => {
+    if (enabled) {
+        return;
+    }
+
+    window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+});
 </script>
 
 <template>
@@ -95,6 +122,11 @@ async function goToChat() {
             <label class="field">
               <span>Password</span>
               <input v-model="password" type="password" placeholder="At least 6 characters" />
+            </label>
+
+            <label v-if="mode === 'login'" class="remember-row">
+              <input v-model="rememberAccount" type="checkbox" />
+              <span>Remember this email on this device</span>
             </label>
 
             <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>

@@ -8,7 +8,10 @@
     "dev:web": "pnpm --filter @agent-char/web dev",
     "build": "pnpm --filter @agent-char/server build && pnpm --filter @agent-char/web build",
     "start": "pnpm --filter @agent-char/server start",
-    "preview:web": "pnpm --filter @agent-char/web preview"
+    "preview:web": "pnpm --filter @agent-char/web preview",
+    "rag:fetch:nba": "pnpm --filter @agent-char/server rag:fetch:nba",
+    "rag:seed:nba": "pnpm --filter @agent-char/server rag:seed:nba",
+    "rag:status:nba": "pnpm --filter @agent-char/server rag:status:nba"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

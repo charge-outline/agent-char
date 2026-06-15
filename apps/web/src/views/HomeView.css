@@ -169,6 +169,21 @@
   margin-top: 6px;
 }
 
+.remember-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #5f544c;
+  font-size: 14px;
+  user-select: none;
+}
+
+.remember-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2e6e61;
+}
+
 .primary-button,
 .secondary-button {
   border: 0;

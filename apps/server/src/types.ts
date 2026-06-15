@@ -1,5 +1,6 @@
 export type RenderMode = "direct" | "buffered";
 export type Provider = "mock" | "live";
+export type AssistantMode = "chat" | "agent" | "nba";
 export type ErrorCode =
     | "upstream_error"
     | "server_error"
@@ -16,6 +17,7 @@ export type StartPayload = {
     model: string;
     provider: Provider;
     conversationId: number;
+    assistantMode: AssistantMode;
 };
 
 export type TokenPayload = {
@@ -33,12 +35,36 @@ export type ErrorPayload = {
     message: string;
 };
 
-export type SSEPayload = StartPayload | TokenPayload | DonePayload | ErrorPayload;
+export type AgentEventPayload = {
+    type: "agent_event";
+    level: "info" | "running" | "success" | "error";
+    stage: "bootstrap" | "thinking" | "tool_call" | "tool_result" | "final";
+    title: string;
+    detail: string;
+    toolName?: string;
+    references?: Array<{
+        title: string;
+        heading?: string;
+        source: string;
+        sourceUrl?: string;
+        category?: string;
+        fusedScore?: number;
+        rerankScore?: number;
+    }>;
+};
+
+export type SSEPayload =
+    | StartPayload
+    | TokenPayload
+    | DonePayload
+    | ErrorPayload
+    | AgentEventPayload;
 
 export type ChatRequest = {
     message?: string;
     mode?: RenderMode;
     provider?: Provider;
+    assistantMode?: AssistantMode;
     history?: MemoryMessage[];
     conversationId?: number;
 };

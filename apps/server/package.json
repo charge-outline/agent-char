@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "rag:fetch:nba": "uv run python/fetch_nba_corpus.py",
+    "rag:seed:nba": "uv run python/nba_rag.py seed",
+    "rag:status:nba": "uv run python/nba_rag.py status"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "bcryptjs": "^3.0.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
