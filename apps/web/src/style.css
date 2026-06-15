@@ -23,6 +23,7 @@ body,
 
 body {
     position: relative;
+    color: #1e1711;
 }
 
 body::before {
@@ -43,6 +44,16 @@ textarea {
     font: inherit;
 }
 
+button,
+input,
+textarea {
+    outline: none;
+}
+
 code {
     font-family: "IBM Plex Sans", sans-serif;
+}
+
+a {
+    color: inherit;
 }

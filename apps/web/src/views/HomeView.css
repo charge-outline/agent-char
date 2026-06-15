@@ -1,0 +1,241 @@
+.landing-shell {
+  width: min(1180px, calc(100vw - 28px));
+  margin: 26px auto 42px;
+}
+
+.landing-panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(30, 23, 17, 0.12);
+  border-radius: 32px;
+  background: rgba(255, 250, 243, 0.82);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 28px 80px rgba(72, 48, 28, 0.12);
+  padding: 30px;
+}
+
+.hero-panel::after {
+  content: "";
+  position: absolute;
+  inset: auto -120px -120px auto;
+  width: 320px;
+  height: 320px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(68, 128, 111, 0.18), transparent 72%);
+}
+
+.eyebrow,
+.section-tag,
+.field span,
+.security-list li {
+  letter-spacing: 0.08em;
+}
+
+.eyebrow,
+.section-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.eyebrow {
+  padding: 8px 12px;
+  background: rgba(30, 23, 17, 0.06);
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 24px;
+  align-items: stretch;
+  margin-top: 18px;
+}
+
+.landing-title {
+  margin: 0 0 16px;
+  font-family: "Fraunces", serif;
+  font-size: clamp(48px, 7vw, 86px);
+  line-height: 0.94;
+  letter-spacing: -0.05em;
+  font-weight: 600;
+}
+
+.landing-title span {
+  display: block;
+  color: #2e6e61;
+}
+
+.landing-lead {
+  margin: 0;
+  max-width: 620px;
+  color: #6a5d53;
+  line-height: 1.85;
+  font-size: 16px;
+}
+
+.security-list {
+  margin: 22px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.security-list li {
+  position: relative;
+  padding: 14px 16px 14px 44px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.54);
+  border: 1px solid rgba(30, 23, 17, 0.08);
+  color: #3b2d23;
+}
+
+.security-list li::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 18px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #d37331, #2e6e61);
+}
+
+.landing-card {
+  position: relative;
+  z-index: 1;
+  padding: 24px;
+  border-radius: 28px;
+  border: 1px solid rgba(30, 23, 17, 0.1);
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.landing-card h2 {
+  margin: 14px 0 10px;
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.landing-card p {
+  margin: 0;
+  color: #6a5d53;
+  line-height: 1.75;
+}
+
+.section-tag {
+  padding: 7px 11px;
+  background: rgba(176, 93, 52, 0.1);
+  color: #a05330;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field span {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #7a6d61;
+}
+
+.field input {
+  width: 100%;
+  border: 1px solid rgba(30, 23, 17, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 252, 248, 0.95);
+  color: #1e1711;
+  padding: 14px 16px;
+}
+
+.field input:focus {
+  outline: 2px solid rgba(68, 128, 111, 0.22);
+  border-color: rgba(68, 128, 111, 0.4);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.primary-button,
+.secondary-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.ghost-link:hover {
+  transform: translateY(-1px);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.primary-button {
+  background: #211811;
+  color: #fff7f0;
+}
+
+.secondary-button {
+  background: rgba(30, 23, 17, 0.08);
+  color: #211811;
+}
+
+.ghost-link {
+  margin-top: 14px;
+  border: 0;
+  background: transparent;
+  color: #2e6e61;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.form-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(181, 51, 51, 0.08);
+  color: #8a2f2f;
+}
+
+@media (max-width: 960px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .landing-shell {
+    width: min(100vw - 18px, 1180px);
+    margin: 12px auto 28px;
+  }
+
+  .landing-panel {
+    padding: 18px;
+  }
+
+  .landing-title {
+    font-size: 42px;
+  }
+}

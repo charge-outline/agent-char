@@ -1,7 +1,8 @@
 import OpenAI from "openai";
 import type { Response } from "express";
+import { AppError } from "./errors.js";
 import { writeSSE } from "./sse.js";
-import type { Provider } from "./types.js";
+import type { MemoryMessage, Provider } from "./types.js";
 
 const BURST_SIZE = 6;
 const BURST_DELAY_MS = 18;
@@ -23,6 +24,7 @@ export async function streamMockTokens(
     res: Response,
     message: string,
     aborted: () => boolean,
+    onToken?: (token: string) => void,
 ) {
     const tokens = Array.from(createMockResponse(message));
 
@@ -33,6 +35,7 @@ export async function streamMockTokens(
 
         const burst = tokens.slice(index, index + BURST_SIZE);
         for (const token of burst) {
+            onToken?.(token);
             writeSSE(res, { type: "token", content: token });
         }
 
@@ -43,57 +46,86 @@ export async function streamMockTokens(
 export async function streamLiveTokens(
     res: Response,
     message: string,
+    history: MemoryMessage[],
     model: string,
     aborted: () => boolean,
+    onToken?: (token: string) => void,
 ) {
     const apiKey = process.env.DASHSCOPE_API_KEY;
     const baseURL = process.env.OPENAI_BASE_URL;
 
     if (!apiKey || !baseURL) {
-        throw new Error("Live provider requires DASHSCOPE_API_KEY and OPENAI_BASE_URL in the root .env file.");
+        throw new AppError(
+            "server_error",
+            "Live provider requires DASHSCOPE_API_KEY and OPENAI_BASE_URL in the root .env file.",
+        );
     }
 
     const client = new OpenAI({ apiKey, baseURL });
-    const stream = await client.chat.completions.create({
-        model,
-        stream: true,
-        messages: [
-            {
-                role: "system",
-                content: "你是一个简洁、友好的 AI 助手。请使用自然中文回答。",
-            },
-            {
-                role: "user",
-                content: message,
-            },
-        ],
-    });
+    try {
+        const stream = await client.chat.completions.create({
+            model,
+            stream: true,
+            messages: [
+                {
+                    role: "system",
+                    content: "你是一个简洁、友好的 AI 助手。请使用自然中文回答。",
+                },
+                ...history.map((item) => ({
+                    role: item.role,
+                    content: item.content,
+                })),
+                {
+                    role: "user",
+                    content: message,
+                },
+            ],
+        });
 
-    for await (const chunk of stream) {
-        if (aborted()) {
-            return;
+        for await (const chunk of stream) {
+            if (aborted()) {
+                return;
+            }
+
+            const token = chunk.choices[0]?.delta?.content;
+            if (!token) {
+                continue;
+            }
+
+            onToken?.(token);
+            writeSSE(res, { type: "token", content: token });
         }
-
-        const token = chunk.choices[0]?.delta?.content;
-        if (!token) {
-            continue;
-        }
-
-        writeSSE(res, { type: "token", content: token });
+    } catch (error) {
+        const messageText = error instanceof Error ? error.message : "Upstream model request failed.";
+        throw new AppError("upstream_error", messageText);
     }
 }
 
 export async function streamByProvider(options: {
     res: Response;
     message: string;
+    history: MemoryMessage[];
     model: string;
     provider: Provider;
     aborted: () => boolean;
+    onToken?: (token: string) => void;
 }) {
     if (options.provider === "mock") {
-        await streamMockTokens(options.res, options.message, options.aborted);
+        await streamMockTokens(
+            options.res,
+            options.message,
+            options.aborted,
+            options.onToken,
+        );
         return;
     }
 
-    await streamLiveTokens(options.res, options.message, options.model, options.aborted);
+    await streamLiveTokens(
+        options.res,
+        options.message,
+        options.history,
+        options.model,
+        options.aborted,
+        options.onToken,
+    );
 }
