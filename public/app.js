@@ -64,11 +64,13 @@ async function readSSE(response, onMessage) {
 function App() {
     const [prompt, setPrompt] = useState("请用 120 字左右解释一下，为什么 buffer + requestAnimationFrame 更适合流式文本渲染。");
     const [mode, setMode] = useState("direct");
+    const [provider, setProvider] = useState("live");
     const [status, setStatus] = useState("idle");
     const [output, setOutput] = useState("");
     const [commitCount, setCommitCount] = useState(0);
     const [tokenCount, setTokenCount] = useState(0);
     const [activeModel, setActiveModel] = useState("qwen-plus / mock fallback");
+    const [activeProvider, setActiveProvider] = useState("live");
     const abortRef = useRef(null);
 
     async function handleSubmit(event) {
@@ -144,6 +146,7 @@ function App() {
                 body: JSON.stringify({
                     message: prompt,
                     mode,
+                    provider,
                 }),
                 signal: controller.signal,
             });
@@ -157,6 +160,7 @@ function App() {
 
                 if (payload.type === "start") {
                     setActiveModel(payload.model);
+                    setActiveProvider(payload.provider);
                     return;
                 }
 
@@ -274,6 +278,42 @@ function App() {
                         </label>
                     </div>
 
+                    <div className="mode-switch">
+                        <label className="label">Stream Provider</label>
+
+                        <label className="mode-card">
+                            <input
+                                type="radio"
+                                name="provider"
+                                value="live"
+                                checked=${provider === "live"}
+                                onChange=${() => setProvider("live")}
+                            />
+                            <div>
+                                <strong>Live Model</strong>
+                                <div className="muted">
+                                    走真实上游模型流，更接近实际对话场景，但 token 节奏不一定方便压测。
+                                </div>
+                            </div>
+                        </label>
+
+                        <label className="mode-card">
+                            <input
+                                type="radio"
+                                name="provider"
+                                value="mock"
+                                checked=${provider === "mock"}
+                                onChange=${() => setProvider("mock")}
+                            />
+                            <div>
+                                <strong>Mock Stream</strong>
+                                <div className="muted">
+                                    走本地 mock 流，更适合做高频 chunk、渲染节流和压力对比实验。
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+
                     <div className="button-row">
                         <button className="button button-primary" type="submit" disabled=${status === "streaming"}>
                             ${status === "streaming" ? "Streaming..." : "Start Streaming"}
@@ -286,9 +326,9 @@ function App() {
                     <div>
                         <label className="label">What To Watch</label>
                         <ol className="hint-list">
-                            <li>看 Network 里 `/api/chat` 的响应是持续追加的 SSE。</li>
-                            <li>看控制台和 UI 提交次数，`direct` 会明显更频繁。</li>
-                            <li>切到 `buffered` 后，文本仍是增量出现，但渲染节奏会更平稳。</li>
+                            <li>看 Network 里 <code>/api/chat</code> 的响应是持续追加的 SSE。</li>
+                            <li>看控制台和 UI 提交次数，<code>direct</code> 会明显更频繁。</li>
+                            <li>切到 <code>buffered</code> 后，文本仍是增量出现，但渲染节奏会更平稳。</li>
                         </ol>
                     </div>
                 </form>
@@ -311,6 +351,12 @@ function App() {
                             <div className="metric-label">Model</div>
                             <div className="metric-value" style=${{ fontSize: "16px", lineHeight: "1.4" }}>
                                 ${activeModel}
+                            </div>
+                        </div>
+                        <div className="metric">
+                            <div className="metric-label">Provider</div>
+                            <div className="metric-value" style=${{ fontSize: "16px", lineHeight: "1.4" }}>
+                                ${activeProvider}
                             </div>
                         </div>
                     </div>

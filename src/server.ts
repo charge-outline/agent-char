@@ -4,12 +4,12 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import OpenAI from "openai";
 
-const PORT = Number(process.env.PORT ?? 3000);
+const PORT = Number(process.env.PORT ?? 3001);
 const MODEL = process.env.CHAT_MODEL ?? "qwen-plus";
 const publicDir = path.join(process.cwd(), "public");
 
 type SSEPayload =
-    | { type: "start"; mode: string; model: string }
+    | { type: "start"; mode: string; model: string; provider: "mock" | "live" }
     | { type: "token"; content: string }
     | { type: "done" }
     | { type: "error"; message: string };
@@ -58,7 +58,7 @@ async function streamMockTokens(
             return;
         }
         writeSSE(res, { type: "token", content: token });
-        await sleep(24);
+        await sleep(1);
     }
 }
 
@@ -103,6 +103,20 @@ async function streamModelTokens(
     }
 }
 
+async function streamTokensByProvider(
+    res: http.ServerResponse,
+    message: string,
+    provider: "mock" | "live",
+    aborted: () => boolean,
+) {
+    if (provider === "mock") {
+        await streamMockTokens(res, message, aborted);
+        return;
+    }
+
+    await streamModelTokens(res, message, aborted);
+}
+
 async function readRequestBody(req: http.IncomingMessage) {
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
@@ -116,6 +130,10 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
     const payload = safeJsonParse(body);
     const message = typeof payload?.message === "string" ? payload.message.trim() : "";
     const mode = typeof payload?.mode === "string" ? payload.mode : "direct";
+    const provider =
+        payload?.provider === "mock" || payload?.provider === "live"
+            ? payload.provider
+            : "live";
 
     if (!message) {
         res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
@@ -134,10 +152,10 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
         "Connection": "keep-alive",
     });
 
-    writeSSE(res, { type: "start", mode, model: MODEL });
+    writeSSE(res, { type: "start", mode, model: MODEL, provider });
 
     try {
-        await streamModelTokens(res, message, () => closed);
+        await streamTokensByProvider(res, message, provider, () => closed);
         if (!closed) {
             writeSSE(res, { type: "done" });
             writeSSE(res, "[DONE]");

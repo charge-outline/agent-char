@@ -1,0 +1,99 @@
+import OpenAI from "openai";
+import type { Response } from "express";
+import { writeSSE } from "./sse.js";
+import type { Provider } from "./types.js";
+
+const BURST_SIZE = 6;
+const BURST_DELAY_MS = 18;
+
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createMockResponse(message: string) {
+    return [
+        "这是一个专门用于压测渲染节奏的 Mock 流。",
+        `你刚才输入的是：「${message}」。`,
+        "它会故意以 burst 的方式连续吐出多个 token，",
+        "这样就能更直观地看到 direct 渲染和 buffer + requestAnimationFrame 合帧渲染之间的差异。",
+    ].join("");
+}
+
+export async function streamMockTokens(
+    res: Response,
+    message: string,
+    aborted: () => boolean,
+) {
+    const tokens = Array.from(createMockResponse(message));
+
+    for (let index = 0; index < tokens.length; index += BURST_SIZE) {
+        if (aborted()) {
+            return;
+        }
+
+        const burst = tokens.slice(index, index + BURST_SIZE);
+        for (const token of burst) {
+            writeSSE(res, { type: "token", content: token });
+        }
+
+        await sleep(BURST_DELAY_MS);
+    }
+}
+
+export async function streamLiveTokens(
+    res: Response,
+    message: string,
+    model: string,
+    aborted: () => boolean,
+) {
+    const apiKey = process.env.DASHSCOPE_API_KEY;
+    const baseURL = process.env.OPENAI_BASE_URL;
+
+    if (!apiKey || !baseURL) {
+        throw new Error("Live provider requires DASHSCOPE_API_KEY and OPENAI_BASE_URL in the root .env file.");
+    }
+
+    const client = new OpenAI({ apiKey, baseURL });
+    const stream = await client.chat.completions.create({
+        model,
+        stream: true,
+        messages: [
+            {
+                role: "system",
+                content: "你是一个简洁、友好的 AI 助手。请使用自然中文回答。",
+            },
+            {
+                role: "user",
+                content: message,
+            },
+        ],
+    });
+
+    for await (const chunk of stream) {
+        if (aborted()) {
+            return;
+        }
+
+        const token = chunk.choices[0]?.delta?.content;
+        if (!token) {
+            continue;
+        }
+
+        writeSSE(res, { type: "token", content: token });
+    }
+}
+
+export async function streamByProvider(options: {
+    res: Response;
+    message: string;
+    model: string;
+    provider: Provider;
+    aborted: () => boolean;
+}) {
+    if (options.provider === "mock") {
+        await streamMockTokens(options.res, options.message, options.aborted);
+        return;
+    }
+
+    await streamLiveTokens(options.res, options.message, options.model, options.aborted);
+}

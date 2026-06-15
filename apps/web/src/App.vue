@@ -1,0 +1,869 @@
+<script setup lang="ts">
+import { computed, nextTick, ref } from "vue";
+import { DynamicScroller, DynamicScrollerItem } from "vue-virtual-scroller";
+import { readSSE } from "./lib/readSse";
+import type { Provider, RenderMode, SSEPayload } from "./types";
+
+type ChatMessage = {
+    id: number;
+    role: "user" | "assistant";
+    content: string;
+    streaming: boolean;
+};
+
+const BUFFER_FLUSH_THRESHOLD = 24;
+
+const prompt = ref("请解释一下，为什么前端在处理高频流式 chunk 时，需要用 buffer 队列配合 requestAnimationFrame 合帧渲染。");
+const mode = ref<RenderMode>("direct");
+const provider = ref<Provider>("live");
+const status = ref("idle");
+const messages = ref<ChatMessage[]>([]);
+const commitCount = ref(0);
+const tokenCount = ref(0);
+const activeModel = ref("qwen-plus");
+const activeProvider = ref<Provider>("live");
+const abortController = ref<AbortController | null>(null);
+const scrollerRef = ref<{ $el?: HTMLElement } | null>(null);
+const userScrolledUp = ref(false);
+const nextMessageId = ref(1);
+
+const providerSummary = computed(() =>
+    activeProvider.value === "mock"
+        ? "Burst mock stream for render stress testing"
+        : "Live model stream from the upstream provider",
+);
+
+const hasMessages = computed(() => messages.value.length > 0);
+
+function syncMessages(nextMessages: ChatMessage[], forceScroll = false) {
+    messages.value = nextMessages.map((message) => ({ ...message }));
+    nextTick(() => {
+        const scrollerElement = (scrollerRef.value?.$el as HTMLElement | undefined) ?? null;
+        if (!scrollerElement) {
+            return;
+        }
+
+        const distanceFromBottom =
+            scrollerElement.scrollHeight - scrollerElement.scrollTop - scrollerElement.clientHeight;
+        const shouldStickToBottom = distanceFromBottom <= 96;
+
+        if (!forceScroll && (userScrolledUp.value || !shouldStickToBottom)) {
+            return;
+        }
+
+        scrollerElement.scrollTop = scrollerElement.scrollHeight;
+    });
+}
+
+function handleScroll() {
+    const scrollerElement = (scrollerRef.value?.$el as HTMLElement | undefined) ?? null;
+    if (!scrollerElement) {
+        return;
+    }
+
+    const distanceFromBottom =
+        scrollerElement.scrollHeight - scrollerElement.scrollTop - scrollerElement.clientHeight;
+    userScrolledUp.value = distanceFromBottom > 96;
+}
+
+function resetConversation() {
+    abortController.value?.abort();
+    messages.value = [];
+    commitCount.value = 0;
+    tokenCount.value = 0;
+    status.value = "idle";
+    userScrolledUp.value = false;
+}
+
+async function startStreaming() {
+    abortController.value?.abort();
+
+    const controller = new AbortController();
+    abortController.value = controller;
+    userScrolledUp.value = false;
+
+    status.value = "streaming";
+    commitCount.value = 0;
+    tokenCount.value = 0;
+
+    const draftMessages = messages.value.map((message) => ({ ...message, streaming: false }));
+    const userMessage: ChatMessage = {
+        id: nextMessageId.value,
+        role: "user",
+        content: prompt.value,
+        streaming: false,
+    };
+    nextMessageId.value += 1;
+
+    const assistantMessage: ChatMessage = {
+        id: nextMessageId.value,
+        role: "assistant",
+        content: "",
+        streaming: true,
+    };
+    nextMessageId.value += 1;
+
+    draftMessages.push(userMessage, assistantMessage);
+    syncMessages(draftMessages, true);
+
+    let receivedTokens = 0;
+    let renderedCommits = 0;
+    let rafId: number | null = null;
+    const tokenBuffer: string[] = [];
+    const assistantMessageIndex = draftMessages.length - 1;
+
+    const flushBuffer = () => {
+        if (tokenBuffer.length === 0) {
+            return;
+        }
+
+        const targetMessage = draftMessages[assistantMessageIndex];
+        if (!targetMessage) {
+            return;
+        }
+
+        targetMessage.content += tokenBuffer.join("");
+        tokenBuffer.length = 0;
+        renderedCommits += 1;
+
+        syncMessages(draftMessages);
+        commitCount.value = renderedCommits;
+        tokenCount.value = receivedTokens;
+    };
+
+    const scheduleFlush = () => {
+        if (rafId !== null) {
+            return;
+        }
+
+        rafId = window.requestAnimationFrame(() => {
+            rafId = null;
+            flushBuffer();
+
+            if (tokenBuffer.length > 0) {
+                scheduleFlush();
+            }
+        });
+    };
+
+    const pushToken = (token: string) => {
+        receivedTokens += 1;
+
+        if (mode.value === "direct") {
+            const targetMessage = draftMessages[assistantMessageIndex];
+            if (!targetMessage) {
+                return;
+            }
+
+            targetMessage.content += token;
+            renderedCommits += 1;
+            syncMessages(draftMessages);
+            commitCount.value = renderedCommits;
+            tokenCount.value = receivedTokens;
+            return;
+        }
+
+        tokenBuffer.push(token);
+
+        const bufferedCharacters = tokenBuffer.reduce((total, item) => total + item.length, 0);
+        if (bufferedCharacters >= BUFFER_FLUSH_THRESHOLD) {
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+            flushBuffer();
+            return;
+        }
+
+        scheduleFlush();
+    };
+
+    try {
+        const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                message: prompt.value,
+                mode: mode.value,
+                provider: provider.value,
+            }),
+            signal: controller.signal,
+        });
+
+        await readSSE(response, (raw) => {
+            if (raw === "[DONE]") {
+                return;
+            }
+
+            const payload = JSON.parse(raw) as SSEPayload;
+
+            if (payload.type === "start") {
+                activeModel.value = payload.model;
+                activeProvider.value = payload.provider;
+                return;
+            }
+
+            if (payload.type === "token") {
+                pushToken(payload.content);
+                return;
+            }
+
+            if (payload.type === "error") {
+                throw new Error(payload.message);
+            }
+        });
+
+        if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+        }
+
+        flushBuffer();
+        const targetMessage = draftMessages[assistantMessageIndex];
+        if (targetMessage) {
+            targetMessage.streaming = false;
+        }
+        syncMessages(draftMessages);
+        status.value = "complete";
+    } catch (error) {
+        const errorName =
+            typeof error === "object" && error && "name" in error ? String(error.name) : "";
+
+        if (errorName === "AbortError") {
+            const targetMessage = draftMessages[assistantMessageIndex];
+            if (targetMessage) {
+                targetMessage.streaming = false;
+            }
+            syncMessages(draftMessages);
+            status.value = "cancelled";
+            return;
+        }
+
+        status.value = "error";
+        const targetMessage = draftMessages[assistantMessageIndex];
+        if (targetMessage) {
+            targetMessage.streaming = false;
+            targetMessage.content += `${
+                targetMessage.content ? "\n\n" : ""
+            }[stream error] ${error instanceof Error ? error.message : String(error)}`;
+        }
+        syncMessages(draftMessages, true);
+    }
+}
+
+function stopStreaming() {
+    abortController.value?.abort();
+}
+</script>
+
+<template>
+  <main class="shell">
+    <section class="hero panel">
+      <div class="eyebrow">Vue 3 · Vite · Express SSE</div>
+      <div class="hero-grid">
+        <div>
+          <h1 class="title">
+            Streaming <span>Observatory</span>
+          </h1>
+          <p class="lead">
+            这个重构后的版本把前后端拆开了：前端用 Vite + Vue 3 做流式实验台，
+            后端用 Express 提供 SSE 流。你可以在同一套 UI 里切换 <code>live</code> 和
+            <code>mock</code>，再观察 <code>direct</code> 与 <code>buffered</code>
+            渲染策略的差异。
+          </p>
+        </div>
+        <aside class="hero-note">
+          <strong>本次实验最重要的变量</strong>
+          <p>
+            如果想明显看出 <code>buffer + requestAnimationFrame</code> 的价值，
+            请先切到 <code>Mock Stream</code>。它会故意用 burst 方式推送 token。
+          </p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="content">
+      <form class="panel control-panel" @submit.prevent="startStreaming">
+        <div class="field">
+          <label class="label" for="prompt">Prompt</label>
+          <textarea
+            id="prompt"
+            v-model="prompt"
+            class="prompt"
+          />
+        </div>
+
+        <div class="cluster">
+          <div class="section-title">Render Strategy</div>
+          <label class="choice">
+            <input v-model="mode" type="radio" value="direct" />
+            <div>
+              <strong>Direct Token Render</strong>
+              <p>每来一个 token 就立即提交一次 UI，最直观，也最容易出现高频重渲染。</p>
+            </div>
+          </label>
+          <label class="choice">
+            <input v-model="mode" type="radio" value="buffered" />
+            <div>
+              <strong>Buffered + requestAnimationFrame</strong>
+              <p>token 先进缓冲队列，再按浏览器帧节奏批量 flush，更适合高频 chunk。</p>
+            </div>
+          </label>
+        </div>
+
+        <div class="cluster">
+          <div class="section-title">Provider</div>
+          <label class="choice">
+            <input v-model="provider" type="radio" value="live" />
+            <div>
+              <strong>Live Model</strong>
+              <p>真实上游模型返回的流，更接近对话助手的生产链路。</p>
+            </div>
+          </label>
+          <label class="choice">
+            <input v-model="provider" type="radio" value="mock" />
+            <div>
+              <strong>Mock Stream</strong>
+              <p>本地 burst mock，用来刻意制造一帧内多个 token 的场景。</p>
+            </div>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button class="button button-primary" type="submit" :disabled="status === 'streaming'">
+            {{ status === "streaming" ? "Streaming..." : "Start Lab" }}
+          </button>
+          <button class="button button-secondary" type="button" @click="stopStreaming">
+            Stop
+          </button>
+          <button class="button button-ghost" type="button" @click="resetConversation">
+            Reset
+          </button>
+        </div>
+
+        <div class="note">
+          <div class="section-title">How To Read The Result</div>
+          <ol>
+            <li>先看 <code>Tokens Seen</code> 和 <code>UI Commits</code> 的关系。</li>
+            <li>切到 <code>Mock Stream</code> 时，<code>buffered</code> 的提交次数应该明显减少。</li>
+            <li>切回 <code>Live Model</code> 时，渲染策略仍会生效，只是差异取决于上游 token 节奏。</li>
+          </ol>
+        </div>
+      </form>
+
+      <section class="panel stage-panel">
+        <div class="metrics">
+          <article class="metric">
+            <span class="metric-label">Status</span>
+            <strong>{{ status }}</strong>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Tokens Seen</span>
+            <strong>{{ tokenCount }}</strong>
+          </article>
+          <article class="metric">
+            <span class="metric-label">UI Commits</span>
+            <strong>{{ commitCount }}</strong>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Provider</span>
+            <strong class="metric-compact">{{ activeProvider }}</strong>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Model</span>
+            <strong class="metric-compact">{{ activeModel }}</strong>
+          </article>
+        </div>
+
+        <div class="stream-card">
+          <div class="stream-head">
+            <div>
+              <h2>Assistant Stream</h2>
+              <p>{{ providerSummary }}</p>
+            </div>
+            <div class="pill">
+              {{ mode === "direct" ? "Direct Render" : "Buffered Render" }}
+            </div>
+          </div>
+
+          <div class="stream-body">
+            <div v-if="hasMessages" class="stream-scroll-shell">
+              <DynamicScroller
+                ref="scrollerRef"
+                class="stream-scroller"
+                :items="messages"
+                :min-item-size="84"
+                key-field="id"
+                @scroll.passive="handleScroll"
+              >
+                <template #default="{ item, active, index }">
+                  <DynamicScrollerItem
+                    :item="item"
+                    :active="active"
+                    :data-index="index"
+                    :size-dependencies="[item.content, item.streaming]"
+                  >
+                    <article class="message-row" :class="`message-row--${item.role}`">
+                      <div class="message-card" :class="`message-card--${item.role}`">
+                        <div class="message-meta">
+                          <span class="message-role">
+                            {{ item.role === "user" ? "You" : "Assistant" }}
+                          </span>
+                          <span v-if="item.streaming" class="message-streaming">Streaming…</span>
+                        </div>
+                        <div class="message-content">
+                          {{ item.content || "…" }}
+                        </div>
+                      </div>
+                    </article>
+                  </DynamicScrollerItem>
+                </template>
+              </DynamicScroller>
+            </div>
+            <span v-else class="placeholder">
+              用户消息和 assistant 的流式回复都会保存在这里。你可以连续发送多轮，然后观察不同 provider 和 render mode 的表现。
+            </span>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+</template>
+
+<style scoped>
+.shell {
+  width: min(1180px, calc(100vw - 28px));
+  margin: 26px auto 42px;
+  display: grid;
+  gap: 20px;
+}
+
+.panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(30, 23, 17, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 250, 243, 0.82);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 28px 80px rgba(72, 48, 28, 0.12);
+}
+
+.hero {
+  padding: 30px;
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  right: -80px;
+  top: -80px;
+  width: 260px;
+  height: 260px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(211, 115, 49, 0.18), transparent 70%);
+}
+
+.eyebrow,
+.pill,
+.section-title,
+.label,
+.metric-label {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  display: inline-flex;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(30, 23, 17, 0.06);
+  font-size: 12px;
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 24px;
+  align-items: end;
+  margin-top: 18px;
+}
+
+.title {
+  margin: 0 0 12px;
+  font-family: "Fraunces", serif;
+  font-size: clamp(52px, 7vw, 92px);
+  line-height: 0.92;
+  font-weight: 600;
+  letter-spacing: -0.05em;
+}
+
+.title span {
+  color: #b05d34;
+}
+
+.lead,
+.hero-note p,
+.choice p,
+.stream-head p,
+.note ol {
+  margin: 0;
+  color: #6a5d53;
+  line-height: 1.75;
+}
+
+.hero-note {
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(30, 23, 17, 0.08);
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.hero-note strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.content {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.control-panel,
+.stage-panel {
+  padding: 24px;
+}
+
+.control-panel {
+  display: grid;
+  gap: 18px;
+  align-self: start;
+}
+
+.stage-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.label,
+.section-title,
+.metric-label {
+  font-size: 12px;
+  color: #7a6d61;
+}
+
+.prompt {
+  min-height: 168px;
+  resize: vertical;
+  padding: 16px;
+  border-radius: 22px;
+  border: 1px solid rgba(30, 23, 17, 0.12);
+  background: rgba(255, 252, 248, 0.95);
+  color: #1e1711;
+  line-height: 1.7;
+}
+
+.prompt:focus {
+  outline: 2px solid rgba(176, 93, 52, 0.22);
+  border-color: rgba(176, 93, 52, 0.4);
+}
+
+.cluster {
+  display: grid;
+  gap: 10px;
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: start;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(30, 23, 17, 0.1);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.choice strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.button {
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 18px;
+  cursor: pointer;
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.button-primary {
+  background: #211811;
+  color: #fff7f0;
+}
+
+.button-secondary {
+  background: rgba(30, 23, 17, 0.08);
+  color: #211811;
+}
+
+.button-ghost {
+  background: rgba(176, 93, 52, 0.1);
+  color: #9e502e;
+}
+
+.note {
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(223, 233, 229, 0.55);
+  border: 1px solid rgba(68, 128, 111, 0.16);
+}
+
+.note ol {
+  padding-left: 20px;
+  margin-top: 10px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+  flex: 0 0 auto;
+}
+
+.metric {
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid rgba(30, 23, 17, 0.08);
+}
+
+.metric strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.metric-compact {
+  font-size: 16px !important;
+  line-height: 1.45 !important;
+}
+
+.stream-card {
+  flex: 1;
+  min-height: 640px;
+  max-height: 640px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 26px;
+  border: 1px solid rgba(30, 23, 17, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 253, 249, 0.96), rgba(246, 236, 223, 0.88));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.54);
+}
+
+.stream-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.stream-head h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: rgba(176, 93, 52, 0.1);
+  color: #a05330;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.stream-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.stream-scroll-shell {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+}
+
+.stream-scroller {
+  height: 100%;
+  min-height: 100%;
+}
+
+.stream-scroll-shell::-webkit-scrollbar {
+  width: 10px;
+}
+
+.stream-scroll-shell::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(176, 93, 52, 0.28);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.stream-block {
+  padding-bottom: 14px;
+}
+
+.message-row {
+  display: flex;
+  padding-bottom: 14px;
+}
+
+.message-row--user {
+  justify-content: flex-end;
+}
+
+.message-row--assistant {
+  justify-content: flex-start;
+}
+
+.message-card {
+  max-width: min(720px, 88%);
+  border-radius: 24px;
+  padding: 16px 18px;
+  box-shadow: 0 10px 28px rgba(72, 48, 28, 0.08);
+}
+
+.message-card--user {
+  background: linear-gradient(135deg, #231912 0%, #3f2a1b 100%);
+  color: #fff8f1;
+  border-bottom-right-radius: 10px;
+}
+
+.message-card--assistant {
+  background: rgba(255, 255, 255, 0.68);
+  color: #241b15;
+  border: 1px solid rgba(30, 23, 17, 0.08);
+  border-bottom-left-radius: 10px;
+}
+
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.message-role {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.message-streaming {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #b05d34;
+}
+
+.message-content {
+  white-space: pre-wrap;
+  line-height: 1.9;
+  font-size: 15px;
+}
+
+.placeholder {
+  color: #7a6d61;
+  font-style: italic;
+}
+
+@media (max-width: 1040px) {
+  .hero-grid,
+  .content {
+    grid-template-columns: 1fr;
+  }
+
+  .stage-panel {
+    height: auto;
+  }
+
+  .stream-card {
+    min-height: 560px;
+    max-height: 560px;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: min(100vw - 18px, 1180px);
+    margin: 12px auto 28px;
+  }
+
+  .hero,
+  .control-panel,
+  .stage-panel {
+    padding: 18px;
+  }
+
+  .stage-panel {
+    height: auto;
+  }
+
+  .metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .stream-card {
+    min-height: 480px;
+    max-height: 480px;
+  }
+
+  .stream-head {
+    flex-direction: column;
+  }
+}
+</style>

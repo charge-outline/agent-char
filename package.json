@@ -1,36 +1,16 @@
 {
-  "name": "ts-node-esm-template",
-  "version": "1.0.0",
-  "description": "",
-  "main": "dist/index.js",
-  "type": "module",
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "dev:sse": "tsx src/server.ts",
-    "start:sse": "node dist/server.js"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "name": "agent-char-workspace",
+  "private": true,
   "packageManager": "pnpm@10.6.3",
+  "scripts": {
+    "dev": "concurrently -n server,web -c yellow,cyan \"pnpm dev:server\" \"pnpm dev:web\"",
+    "dev:server": "pnpm --filter @agent-char/server dev",
+    "dev:web": "pnpm --filter @agent-char/web dev",
+    "build": "pnpm --filter @agent-char/server build && pnpm --filter @agent-char/web build",
+    "start": "pnpm --filter @agent-char/server start",
+    "preview:web": "pnpm --filter @agent-char/web preview"
+  },
   "devDependencies": {
-    "@types/node": "^22.13.11",
-    "ts-node": "^10.9.2",
-    "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "chalk": "^5.4.1",
-    "dotenv": "^16.4.7",
-    "openai": "^6.42.0",
-    "zod": "^3.24.2"
+    "concurrently": "^9.1.2"
   }
 }
